@@ -1,7 +1,7 @@
 #!/usr/bin/env python
 
 import argparse
-from globus_sdk import NexusClient
+import globus_sdk
 import requests
 import json
 import pprint
@@ -9,10 +9,9 @@ import time
 import sys
 from transfer_bindings import TransferBindingsClient, TransferBaseEntity
 
-
 service_url = "https://publish.globus.org/v1/api/"
 
-token = None
+auth_token = None
 headers = None
 printer = pprint.PrettyPrinter(indent=4)
 
@@ -22,11 +21,6 @@ def load_file(file):
         data = f.read()
     data = data.strip()
     return data
-
-
-def load_token(file):
-    global token
-    token = load_file(file)
 
 
 def load_metadata(file):
@@ -39,8 +33,8 @@ def prompt_for_metadata():
 
 
 def get_headers():
-    if token:
-        return {'Authorization': 'Bearer ' + token}
+    if auth_token:
+        return {'Authorization': 'Bearer ' + auth_token}
     else:
         return None
 
@@ -96,6 +90,8 @@ def print_schemas():
 def print_schema(schema):
     printer.pprint(schema)
 
+def print_dataset(dataset):
+    printer.pprint(dataset)
 
 def list_schemas():
     return get_json('schemas')
@@ -129,6 +125,9 @@ def get_dataset(dataset_id):
     path = "datasets/" + dataset_id
     return get_json(path)
 
+def get_dataset(dataset_pid):
+    path = "datasets?uri=" + dataset_pid
+    return get_json(path)
 
 def delete_dataset(dataset_id):
     path = "datasets/" + dataset_id
@@ -182,12 +181,6 @@ def wait_for_transfer(transfer_client, transfer_id, poll_time=None):
 def main():
     parser = argparse.ArgumentParser(description='Data Publication Client')
 # Client configurations
-    parser.add_argument('--token-file', dest='token_file',
-                        help='File containing a Globus Auth Bearer token')
-    parser.add_argument('--nexus-token-file', dest='nexus_token',
-                        help='Nexus token required for transfer operations')
-    parser.add_argument('--generate-nexus-token', dest='nexus_credentials',
-                        help='Generate a nexus token and print to output. username:password must be provided')
     parser.add_argument('--service-url', dest='service_url',
                         help='URL of the service to invoke')
 # Operation configurations
@@ -201,6 +194,8 @@ def main():
                         help='List available collections')
     parser.add_argument('--dataset-id', dest='dataset_id',
                         help='Id of dataset used for other actions')
+    parser.add_argument('--dataset-pid', dest='dataset_pid',
+                        help='Persistent identifier of dataset used for other actions')
     parser.add_argument('--transfer-id', dest='transfer_id',
                         help='Id of transfer used for other actions')
     parser.add_argument('--interactive', dest='interactive',
@@ -219,9 +214,15 @@ def main():
     parser.add_argument('--create-dataset', dest='perform_create',
                         action='store_true',
                         help='Create a new dataset in a collection. --metadata-file and --collection-id must be provided')
+    parser.add_argument('--get-dataset', dest='perform_get',
+                        action='store_true',
+                        help='Get a dataset from a collection.')
     parser.add_argument('--transfer-data', dest='perform_transfer',
                         action='store_true',
                         help='Transfer data into dataset storage. --data-endpoint and --data-directory must be provided.')
+    parser.add_argument('--download-dataset', dest='perform_download',
+                        action='store_true',
+                        help='Download dataset into dataset storage. --data-endpoint and --data-directory must be provided.')
     parser.add_argument('--wait', dest='wait_for_transfer',
                         action='store_true',
                         help='Wait for transfers to complete before finishing submission and exiting. --submit must be performed or or --transfer-id must be provided.')
@@ -236,23 +237,13 @@ def main():
 #    print 'args: ', args
 
 # Setup clients
-    nexus_token = None
     transfer_id = None
-    if args.nexus_credentials is not None:
-        creds = args.nexus_credentials.split(':', 1)
-        nexus = NexusClient()
-        nexus_token = nexus.get_goauth_token(creds[0], creds[1])
-        print 'Nexus token: ' + nexus_token
-    if args.nexus_token is not None:
-        nexus_token = load_file(args.nexus_token)
 
-    if nexus_token is not None:
-        transfer_client = TransferBindingsClient()
-        transfer_client.set_auth_token(nexus_token)
+    auth_token = globus_sdk.config.get_auth_token(None)
+    transfer_client = TransferBindingsClient()
+
     if args.service_url is not None:
         service_url = args.service_url
-    if args.token_file is not None:
-        load_token(args.token_file)
 
 # Setup provided identifiers
     metadata = None
@@ -264,6 +255,7 @@ def main():
     collection_id = None
     dataset_id = None
     transfer_id = None
+    dataset_pid = None
 
 # Setup user input values
     if args.data_endpoint is not None:
@@ -284,7 +276,8 @@ def main():
         dataset_id = args.dataset_id
     if args.transfer_id is not None:
         transfer_id = args.transfer_id
-
+    if args.dataset_pid is not None:
+            dataset_pid = args.dataset_pid
 # Perform actions
     if args.list_schemas:
         print_schemas()
@@ -331,6 +324,22 @@ def main():
         transfer_id = transfer_id.task_id
         print 'id of transfer task is ', transfer_id
 
+    if args.perform_download:
+        if src_endpoint is None or src_path is None:
+            print '--data-endpoint and --data-directory must be provided to perform transfers.'
+            sys.exit(1)
+        elif dataset_pid is None:
+            print '--dataset-pid must be provided'
+            sys.exit(1)
+
+        dataset = get_dataset(dataset_pid)
+        dataset_endpoint = dataset['globus.shared_endpoint.name']
+        dataset_path = dataset['globus.shared_endpoint.path']
+        transfer_id = perform_transfer(transfer_client, dataset_endpoint, dataset_path, src_endpoint, src_path)
+        transfer_id = transfer_id.task_id
+        print 'id of transfer task is ', transfer_id
+
+
     if args.wait_for_transfer or args.poll_time:
         if args.wait_for_transfer and args.poll_time:
             print 'Only one of --wait and --poll should be specified'
@@ -351,6 +360,12 @@ def main():
             print '--submit requires either --create-dataset or --dataset-id to be specified'
             sys.exit(1)
         delete_dataset(dataset_id)
+
+    if args.perform_get:
+        if dataset_pid is None:
+            print '--get-dataset requires --dataset-pid to be specified'
+            sys.exit(1)
+        print_dataset(get_dataset(dataset_pid))
 
 
 if __name__ == '__main__':

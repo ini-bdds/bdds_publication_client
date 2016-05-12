@@ -8,7 +8,7 @@ class TransferBindingsClient(TransferClient):
     def autoactivate_endpoint(self, endpoint_id):
         path = self.qjoin_path("endpoint", endpoint_id, "autoactivate")
         r = self.post(path)
-        return r.json_body
+        return r
 
     
     def endpoint_search(self, scope_filter = None, fulltext_filter=None, fields=None, offset=None, 
@@ -26,9 +26,8 @@ class TransferBindingsClient(TransferClient):
             params['limit'] = limit
             
         r = self.get("endpoint_search", params=params)
-#        return r.json_body
         return TransferBaseEntity(globus_response=r)
-    
+
     def create_submissionid(self):
         r = self.get('submission_id')
         return TransferBaseEntity(globus_response=r)
@@ -39,10 +38,10 @@ class TransferBaseEntity():
         if json_data is not None:
             props = json.loads(json_data)
         if globus_response is not None:
-            props = globus_response.json_body
+            props = globus_response.data
         if props is None:
             props = kwargs
-            
+
         if props is not None:
             for key, value in props.iteritems():
                 if isinstance(value, dict):
